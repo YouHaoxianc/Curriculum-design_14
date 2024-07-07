@@ -7,7 +7,8 @@ import os
 from typing import Iterable
 from PIL import Image
 import numpy as np
-
+from sklearn.metrics import r2_score, mean_absolute_error, mean_squared_error
+from thop import profile
 import torch
 
 def train_one_epoch(model: torch.nn.Module, criterion: torch.nn.Module,
@@ -63,6 +64,8 @@ def train_one_epoch(model: torch.nn.Module, criterion: torch.nn.Module,
 def evaluate(model, data_loader, device, output_dir):
     mae = 0
     mse = 0
+    gt_cnt_list = []
+    pred_cnt_list = []
     model.eval()
     for idx, sample in enumerate(data_loader):
         img, patches, targets = sample
@@ -71,6 +74,9 @@ def evaluate(model, data_loader, device, output_dir):
         patches['scale_embedding'] = patches['scale_embedding'].to(device)
         gtcount = targets['gtcount']
         with torch.no_grad():
+            if img.shape == (1, 3, 384, 384):
+                macs, params = profile(model, inputs=(img, patches, False))
+                print(f'Params (M): {params*1e-6}, MACs (G): {macs*1e-9} G')
             outputs = model(img, patches, is_train=False)
         error = torch.abs(outputs.sum() - gtcount.item()).item()
         mae += error
@@ -79,11 +85,15 @@ def evaluate(model, data_loader, device, output_dir):
     mae = mae / len(data_loader)
     mse = mse / len(data_loader)
     mse = mse ** 0.5
-    
+    gt_cnt_list.append(gtcount.item())
+    pred_cnt_list.append(outputs.sum())
     with open(os.path.join(output_dir, 'result.txt'), 'a') as f:
         f.write('MAE %.2f, MSE %.2f \n'%(mae, mse))
     print('MAE %.2f, MSE %.2f \n'%(mae, mse))
-
+    R2=r2_score(gt_cnt_list, pred_cnt_list)
+    MAE=mean_absolute_error(gt_cnt_list, pred_cnt_list)
+    RMSE=mean_squared_error(gt_cnt_list, pred_cnt_list)**0.5
+    print(f'r2: {R2}, mae: {MAE}, rmse: {RMSE}')
     return mae, mse
 
 @torch.no_grad()
@@ -111,7 +121,7 @@ def visualization(cfg, model, dataset, data_loader, device, output_dir):
         error = torch.abs(outputs.sum() - gtcount.item()).item()
         mae += error
         mse += error ** 2
-
+        
         # read original image
         file_name = dataset.data_list[idx][0]
         file_path = image_path = dataset.data_dir + 'images_384_VarV2/' + file_name
