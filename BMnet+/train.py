@@ -73,7 +73,7 @@ def main(args):
     
     if cfg.VAL.evaluate_only:
         if os.path.isfile(cfg.VAL.resume):
-            checkpoint = torch.load(cfg.VAL.resume, map_location='cpu')
+            checkpoint = torch.load('model_best.pth', map_location='cpu')
             model.load_state_dict(checkpoint['model'])
         else:
             print('model state dict not found.')
@@ -156,25 +156,23 @@ if __name__ == '__main__':
     )
     parser.add_argument(
         "--cfg",
-        default="config/bmnet+_fsc147.yaml",
+        default="config/test_bmnet+.yaml",
         metavar="FILE",
         help="path to config file",
         type=str,
     )
 
-    args = parser.parse_args()
+    args = parser.parse_args(args=[])
 
     cfg.merge_from_file(args.cfg)
     #cfg.merge_from_list(args.opts)
     
     cfg.DIR.output_dir = os.path.join(cfg.DIR.snapshot, cfg.DIR.exp)
-    if not os.path.exists(cfg.DIR.output_dir):
-        os.mkdir(cfg.DIR.output_dir)    
+ 
 
     cfg.TRAIN.resume = os.path.join(cfg.DIR.output_dir, cfg.TRAIN.resume)
     cfg.VAL.resume = os.path.join(cfg.DIR.output_dir, cfg.VAL.resume)
 
-    with open(os.path.join(cfg.DIR.output_dir, 'config.yaml'), 'w') as f:
-        f.write("{}".format(cfg))
+
 
     main(cfg)
