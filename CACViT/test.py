@@ -16,9 +16,9 @@ from torch.utils.data import Dataset
 import torchvision
 from torchvision import transforms
 import torchvision.transforms.functional as TF
-
+from sklearn.metrics import r2_score, mean_absolute_error, mean_squared_error
 import timm
-
+from thop import profile
 
 import util.misc as misc
 import models.CACViT as CntViT
@@ -91,7 +91,7 @@ def get_args_parser():
 os.environ["CUDA_LAUNCH_BLOCKING"] = '1'
 
 # load data from FSC147
-data_path = 'data/'
+data_path = '../data/FSC147_384_V2/'
 anno_file = data_path + 'annotation_FSC147_384.json'
 data_split_file = data_path + 'Train_Test_Val_FSC_147.json'
 im_dir = data_path + 'images_384_VarV2'
@@ -177,8 +177,7 @@ class TestData(Dataset):
 def main(args):
     misc.init_distributed_mode(args)
 
-    print('job dir: {}'.format(os.path.dirname(os.path.realpath(__file__))))
-    print("{}".format(args).replace(', ', ',\n'))
+
 
     device = torch.device(args.device)
 
@@ -242,7 +241,8 @@ def main(args):
     loss_array = []
     gt_array = []
     wrong_id = []
-
+    gt_cnt_list = []
+    pred_cnt_list = []
     for data_iter_step, (samples, gt_dots, boxes, pos, gt_map,im_id,scale) in enumerate(metric_logger.log_every(data_loader_test, print_freq, header)):
         samples = samples.to(device, non_blocking=True)
         gt_dots = gt_dots.to(device, non_blocking=True).half()
@@ -285,6 +285,8 @@ def main(args):
                 with torch.no_grad():
                     while start + 383 < w:
                         input_x = [r_image[:,:,:,start:start+384], boxes,scale]
+                        macs, params = profile(model, inputs=(input_x, ))
+                        print(f'Params (M): {params*1e-6}, MACs (G): {macs*1e-9} G')
                         output = model(input_x)
                         output=output.squeeze(0)
                         # a = output.clone()
@@ -319,6 +321,7 @@ def main(args):
                     input_x.append(a)
                     input_x.append(boxes)
                     input_x.append(scale)
+                    
                     output = model(input_x)
                     output=output.squeeze(0)
                     b1 = nn.ZeroPad2d(padding=(start, w-prev-1, 0, 0))
@@ -420,9 +423,8 @@ def main(args):
 
         train_mae += cnt_err
         train_rmse += cnt_err ** 2
-
-        print(f'{data_iter_step}/{len(data_loader_test)}: pred_cnt: {pred_cnt},  gt_cnt: {gt_cnt},  error: {cnt_err},  AE: {cnt_err},  SE: {cnt_err ** 2} ')
-
+        gt_cnt_list.append(gt_cnt)
+        pred_cnt_list.append(pred_cnt)
         loss_array.append(cnt_err)
         gt_array.append(gt_cnt)
         
@@ -433,18 +435,20 @@ def main(args):
     
     log_stats = {'MAE': train_mae/(len(data_loader_test)),
                 'RMSE':  (train_rmse/(len(data_loader_test)))**0.5}
-
+    r2=r2_score(gt_cnt_list, pred_cnt_list)
+    mae=mean_absolute_error(gt_cnt_list, pred_cnt_list)
+    rmse=mean_squared_error(gt_cnt_list, pred_cnt_list)**0.5
     print('Current MAE: {:5.2f}, RMSE: {:5.2f} '.format( train_mae/(len(data_loader_test)), (train_rmse/(len(data_loader_test)))**0.5))
-
+    print(f'r2: {r2}, mae: {mae}, rmse: {rmse}')
 
     total_time = time.time() - start_time
     total_time_str = str(datetime.timedelta(seconds=int(total_time)))
     print('Testing time {}'.format(total_time_str))
 
 if __name__ == '__main__':
-    os.environ['CUDA_VISIBLE_DEVICES'] = '4'
+    os.environ['CUDA_VISIBLE_DEVICES'] = '0'
     args = get_args_parser()
-    args = args.parse_args()
+    args = args.parse_args(args=[])
     if args.output_dir:
         Path(args.output_dir).mkdir(parents=True, exist_ok=True)
     main(args)
