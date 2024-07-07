@@ -1,19 +1,10 @@
-#!/usr/bin/env python
-# coding: utf-8
-
-"""
-Test code written by Viresh Ranjan
-
-Last modified by: Minh Hoai Nguyen (minhhoai@cs.stonybrook.edu)
-Date: 2021/04/19
-"""
-
 import copy
 from model import CountRegressor, Resnet50FPN
 from utils import MAPS, Scales, Transform, extract_features
 from utils import MincountLoss, PerturbationLoss
 from PIL import Image
 import os
+from thop import profile
 import torch
 import argparse
 import json
@@ -21,19 +12,19 @@ import numpy as np
 from tqdm import tqdm
 from os.path import exists
 import torch.optim as optim
-
+from sklearn.metrics import r2_score, mean_absolute_error, mean_squared_error
 
 parser = argparse.ArgumentParser(description="Few Shot Counting Evaluation code")
-parser.add_argument("-dp", "--data_path", type=str, default='./data/', help="Path to the FSC147 dataset")
-parser.add_argument("-ts", "--test_split", type=str, default='val', choices=["val_PartA","val_PartB","test_PartA","test_PartB","test", "val"], help="what data split to evaluate on")
-parser.add_argument("-m",  "--model_path", type=str, default="./data/pretrainedModels/FamNet_Save1.pth", help="path to trained model")
-parser.add_argument("-a",  "--adapt", action='store_true', help="If specified, perform test time adaptation")
+parser.add_argument("-dp", "--data_path", type=str, default='../data/FSC147_384_V2/', help="Path to the FSC147 dataset")
+parser.add_argument("-ts", "--test_split", type=str, default='test', choices=["val_PartA","val_PartB","test_PartA","test_PartB","test", "val"], help="what data split to evaluate on")
+parser.add_argument("-m",  "--model_path", type=str, default="../Checkpoints/FamNet.pth", help="path to trained model")
+parser.add_argument("-a",  "--adapt", action='store_true', default=False, help="If specified, perform test time adaptation")
 parser.add_argument("-gs", "--gradient_steps", type=int,default=100, help="number of gradient steps for the adaptation")
 parser.add_argument("-lr", "--learning_rate", type=float,default=1e-7, help="learning rate for adaptation")
 parser.add_argument("-wm", "--weight_mincount", type=float,default=1e-9, help="weight multiplier for Mincount Loss")
 parser.add_argument("-wp", "--weight_perturbation", type=float,default=1e-4, help="weight multiplier for Perturbation Loss")
 parser.add_argument("-g",  "--gpu-id", type=int, default=0, help="GPU id. Default 0 for the first GPU. Use -1 for CPU.")
-args = parser.parse_args()
+args = parser.parse_args(args=[])
 
 data_path = args.data_path
 anno_file = data_path + 'annotation_FSC147_384.json'
@@ -53,7 +44,6 @@ else:
     use_gpu = True
     os.environ["CUDA_DEVICE_ORDER"] = "PCI_BUS_ID"
     os.environ["CUDA_VISIBLE_DEVICES"] = str(args.gpu_id)
-
 resnet50_conv = Resnet50FPN()
 if use_gpu: resnet50_conv.cuda()
 resnet50_conv.eval()
@@ -73,7 +63,8 @@ with open(data_split_file) as f:
 cnt = 0
 SAE = 0  # sum of absolute errors
 SSE = 0  # sum of square errors
-
+gt_cnt_list = []
+pred_cnt_list = []
 print("Evaluation on {} data".format(args.test_split))
 im_ids = data_split[args.test_split]
 pbar = tqdm(im_ids)
@@ -99,6 +90,14 @@ for im_id in pbar:
         boxes = boxes.cuda()
 
     with torch.no_grad(): features = extract_features(resnet50_conv, image.unsqueeze(0), boxes.unsqueeze(0), MAPS, Scales)
+
+    if image.shape == (3, 384, 384):
+        resnet50_conv_macs, resnet50_conv_params = profile(resnet50_conv, inputs=(image.unsqueeze(0), ))
+        regressor_macs, regressor_params = profile(regressor, inputs=(features, ))
+        macs = resnet50_conv_macs + regressor_macs
+        params = resnet50_conv_params + regressor_params
+        print(f'Params (M): {params*1e-6}, MACs (G): {macs*1e-9} G')
+        
 
     if not args.adapt:
         with torch.no_grad(): output = regressor(features)
@@ -127,9 +126,10 @@ for im_id in pbar:
     err = abs(gt_cnt - pred_cnt)
     SAE += err
     SSE += err**2
+    gt_cnt_list.append(gt_cnt)
+    pred_cnt_list.append(pred_cnt)
 
-    pbar.set_description('{:<8}: actual-predicted: {:6d}, {:6.1f}, error: {:6.1f}. Current MAE: {:5.2f}, RMSE: {:5.2f}'.\
-                         format(im_id, gt_cnt, pred_cnt, abs(pred_cnt - gt_cnt), SAE/cnt, (SSE/cnt)**0.5))
-    print("")
-
-print('On {} data, MAE: {:6.2f}, RMSE: {:6.2f}'.format(args.test_split, SAE/cnt, (SSE/cnt)**0.5))
+print(f'On {args.test_split} data, mae: {SAE/cnt}, rmse: {(SSE/cnt)**0.5}, r2: {r2_score(gt_cnt_list, pred_cnt_list)}')
+mae=mean_absolute_error(gt_cnt_list, pred_cnt_list)
+rmse=mean_squared_error(gt_cnt_list, pred_cnt_list)**0.5
+print(f'mae: {mae}, rmse: {rmse}')
